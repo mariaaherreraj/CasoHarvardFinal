@@ -3,11 +3,73 @@
 
 
 
+# 7) Ajustar modelo logit (glm con link logit) -----------------------------
+# Construimos fórmula con las features detectadas
+fmla <- as.formula(paste("churn_bin ~", paste(features_present, collapse = " + ")))
+logit_mod <- glm(fmla, data = model_df, family = binomial(link = "logit"))
+summary(logit_mod)
 
 
+# Extraer coeficientes del modelo logit (limpio y como data.frame)
+coef_tab <- broom::tidy(logit_mod, conf.int = TRUE) %>% as.data.frame()
 
+# Renombrar columnas y redondear para mejor presentación
+coef_tab <- coef_tab %>%
+  rename(
+    Variable = term,
+    Estimacion = estimate,
+    Error estandar = std.error,
+    Valor z = statistic,
+    Valor p = p.value,
+    IC 2.5% = conf.low,
+    IC 97.5% = conf.high
+  ) %>%
+  mutate(
+across(where(is.numeric), ~round(., 4))  # redondear todos los números
+  )
+# Guardar tabla en CSV
+data.table::fwrite(coef_tab, "tabla_regresion_logit.csv")
 
+# Crear tabla formateada para Word
+tabla_regresion_flex <- flextable(coef_tab) %>%
+  autofit() %>%
+  theme_vanilla() %>%
+  bold(part = "header") %>%
+  align(align = "center", part = "all") %>%
+  fontsize(size = 10, part = "all") %>%
+  color(i = ~ Valor p < 0.05, color = "red") %>%  # resalta en rojo las variables significativas
+  set_caption("Tabla 2. Resultados del modelo Logit - Probabilidad de Churn")
 
+# Crear documento Word con formato y guardar
+doc_reg <- read_docx() %>%
+  body_add_par("2. Resultados del modelo Logit", style = "heading 1") %>%
+  body_add_par(" ", style = "Normal") %>%
+  body_add_flextable(tabla_regresion_flex) %>%
+  body_add_par("Fuente: elaboración propia con base en datos de QWE Inc.", style = "Normal")
+print(doc_reg, target = "tabla_regresion_logit.docx")
+# 9) Evaluación del modelo -------------------------------------------------
+# Pseudo R2 de McFadden
+pr2 <- pR2(logit_mod)
+cat("Pseudo R2 (McFadden):\n")
+print(pr2)
+
+# Predicciones: probabilidades y clases (umbral 0.5)
+model_df$pred_prob <- predict(logit_mod, type = "response")
+model_df$pred_class_05 <- factor(ifelse(model_df$pred_prob >= 0.5, "Yes", "No"),
+                                 levels = c("No","Yes"))
+
+# Matriz de confusión con umbral 0.5
+cm_05 <- confusionMatrix(model_df$pred_class_05, model_df$churn_bin, positive = "Yes")
+print(cm_05)
+capture.output(cm_05, file = "confusion_matrix_05.txt")
+
+# ROC y AUC
+roc_obj <- roc(response = as.numeric(model_df$churn_bin == "Yes"), predictor = model_df$pred_prob)
+auc_val <- auc(roc_obj)
+cat("AUC:", auc_val, "\n")
+png("ROC_curve.png", width=800, height=600)
+plot(roc_obj, main = paste0("ROC Curve - AUC = ", round(auc_val,4)))
+dev.off()
 # Umbral óptimo (Youden)
 coords_youden <- coords(roc_obj, "best", best.method = "youden")
 opt_thresh <- coords_youden[["threshold"]]  # extrae solo el número
