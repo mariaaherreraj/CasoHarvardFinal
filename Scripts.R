@@ -1,8 +1,130 @@
+# churn_analysis_from_your_excel.R
+# -------------------------------
+# Requisitos: instala paquetes si no los tienes
+required_pkgs <- c("readxl","dplyr","ggplot2","broom","pscl","pROC","caret",
+                   "modelsummary","kableExtra","data.table","gridExtra","officer","flextable")
+for(p in required_pkgs) if(!requireNamespace(p, quietly=TRUE)) install.packages(p)
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(pscl)        # pR2
+library(pROC)        # ROC/AUC
+library(caret)       # confusionMatrix
+library(modelsummary)
+library(kableExtra)
+library(data.table)
+library(gridExtra)
+library(officer)
+library(flextable)
+library(skimr)
+library(openxlsx)
+# 1) Cargar datos ---------------------------------------------------------
+# Lee la primera hoja del Excel DATA.xlsx
+getwd()
+setwd("C:/Users/usuario/Desktop/Analitica/Clases/HarvardUltimo")
+file_path <- "DATA.xlsx"
+sheets <- excel_sheets(file_path)
+df_raw <- read_excel(file_path, sheet = sheets[2])
 
 
+df_raw <- as.data.frame(df_raw)
+cat("Columnas originales:\n")
+print(colnames(df_raw))
 
+# 2) Renombrar columnas a nombres simples para trabajar cómodamente ----------
+# Según la imagen que enviaste, renombramos las columnas más importantes.
+# Ajusta si tu Excel tiene algún nombre ligeramente distinto.
+df <- df_raw %>%
+  rename(
+    ID = ID,
+    customer_age_months = Customer Age (in months),
+    churn = Churn (1 = Yes, 0 = No),
+    chi_month0 = CHI Score Month 0,
+    chi_change_0_1 = CHI Score 0-1,
+    support_cases_month0 = Support Cases Month 0,
+    support_cases_change_0_1 = Support Cases 0-1,
+    sp_month0 = SP Month 0,
+    sp_change_0_1 = SP 0-1,
+    logins_change_0_1 = Logins 0-1,
+    blog_change_0_1 = Blog Articles 0-1,
+    views_change_0_1 = Views 0-1,
+    days_since_last_login_change_0_1 = Days Since Last Login 0-1
+  )
 
+cat("Columnas tras renombrar:\n")
+print(colnames(df))
 
+# 3) Revisar y preparar la variable objetivo (churn) -----------------------
+# Aseguramos que 'churn' sea 0/1 y creamos factor 'churn_bin' con etiquetas claras.
+df$churn <- as.numeric(df$churn)  # fuerza a numérico por si viene como texto
+if(!all(na.omit(unique(df$churn)) %in% c(0,1))){
+  stop("La columna 'churn' no contiene solo 0/1. Revisa los valores en el Excel.")
+}
+df$churn_bin <- factor(df$churn, levels = c(0,1), labels = c("No","Yes"))
+
+# 4) Selección de variables explicativas para el modelo -------------------
+# Usamos las variables relacionadas en el caso (las renombradas arriba).
+features <- c("customer_age_months", "chi_month0", "chi_change_0_1",
+              "support_cases_month0", "support_cases_change_0_1",
+              "sp_month0", "sp_change_0_1",
+              "logins_change_0_1", "blog_change_0_1", "views_change_0_1",
+              "days_since_last_login_change_0_1")
+
+# Ver cuáles de esas columnas realmente existen en el df (por si falta alguna)
+features_present <- intersect(features, colnames(df))
+cat("Features que se usarán:\n")
+print(features_present)
+
+# 5) Crear dataset para modelar y quitar filas con NA en variables claves ---
+model_df <- df %>% select(all_of(c("ID","churn","churn_bin", features_present))) %>% na.omit()
+cat("Número de observaciones después de quitar NAs:", nrow(model_df), "\n")
+
+# 6) Tabla descriptiva simple ---------------------------------------------
+# Hacemos un resumen (n, media, sd, min, 25%, med, 75%, max) para variables numéricas
+desc <- model_df %>%
+  select(all_of(features_present)) %>%
+  summary()
+
+# Guardar tabla descriptiva en CSV y Word
+desc_table <- skim(model_df %>% select(all_of(features_present)))
+
+# Seleccionar solo las columnas relevantes
+desc_clean <- desc_table %>%
+  select(skim_variable, numeric.mean, numeric.sd, numeric.p0, numeric.p25, numeric.p50, numeric.p75, numeric.p100) %>%
+  rename(
+    Variable = skim_variable,
+    Media = numeric.mean,
+    "Desv.Est." = numeric.sd,
+    Min = numeric.p0,
+    "P25" = numeric.p25,
+    Mediana = numeric.p50,
+    "P75" = numeric.p75,
+    Max = numeric.p100
+  )
+
+# Guardar en formato CSV
+data.table::fwrite(desc_clean, "tabla_descriptiva.csv")
+
+# Crear una tabla con formato visual en Word
+tabla_flex <- flextable(desc_clean) %>%
+  autofit() %>%  # Ajusta el ancho automático de columnas
+  theme_vanilla() %>%  # Aplica un estilo claro
+  bold(part = "header") %>%  # Encabezados en negrita
+  align(align = "center", part = "all") %>%
+  set_caption("Tabla 1. Resumen descriptivo de las variables") %>%
+  fontsize(size = 10, part = "all")
+
+# Crear documento Word y agregar tabla
+doc <- read_docx() %>%
+  body_add_par("1. Resumen descriptivo de las variables", style = "heading 1") %>%
+  body_add_par(" ", style = "Normal") %>%
+  body_add_flextable(tabla_flex) %>%
+  body_add_par("Fuente: elaboración propia con base en datos de QWE Inc.", style = "Normal")
+
+# Guardar el archivo Word
+print(doc, target = "tabla_descriptiva.docx")
 # 7) Ajustar modelo logit (glm con link logit) -----------------------------
 # Construimos fórmula con las features detectadas
 fmla <- as.formula(paste("churn_bin ~", paste(features_present, collapse = " + ")))
